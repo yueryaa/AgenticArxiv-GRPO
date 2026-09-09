@@ -118,8 +118,19 @@ class BaseAgent(ABC):
     # ---------- 通用执行循环 ----------
 
     def run(
-        self, task: str, agent_model: str = None, session_id: str = "default"
+        self,
+        task: str,
+        agent_model: str = None,
+        session_id: str = "default",
+        initial_history: str = "",
     ) -> Dict[str, Any]:
+        """Run one task through the ReAct loop.
+
+        ``initial_history`` is model-visible state that existed before the
+        current user request.  Benchmark setup actions use it to expose the
+        same legitimate session context that GRPO sees, without counting the
+        setup as policy actions or placing it in the scored trajectory.
+        """
         log.info(f"[{self.__class__.__name__}] 开始执行任务: {task}")
         run_start = time.time()
         self.session_id = session_id
@@ -138,8 +149,14 @@ class BaseAgent(ABC):
         tools = self.discover_tools()
         tools_description = self.format_tools_for_prompt(tools)
 
-        # 注入会话上下文，避免 LLM 重复搜索已缓存的论文
-        enriched_task = self._enrich_task_with_context(task, session_id)
+        # Benchmark/GRPO 会显式传入同一份、由 TaskSpec.setup 派生的可见状态。
+        # 此时不要再从 side-effects 追加另一种格式的论文列表，否则评测 prompt
+        # 会比训练 prompt 多出标题，重新造成输入分布错位。普通 Web/API 调用没有
+        # initial_history，仍沿用运行时 store 中的真实会话上下文。
+        enriched_task = (
+            task if initial_history.strip()
+            else self._enrich_task_with_context(task, session_id)
+        )
 
         history: List[Dict[str, str]] = []
         step_timings: List[Dict[str, int]] = []
@@ -148,7 +165,13 @@ class BaseAgent(ABC):
         for iteration in range(self.max_iterations):
             log.info(f"第 {iteration + 1} 次迭代")
 
-            history_text = self.format_history(history)
+            generated_history = self.format_history(history)
+            history_text = initial_history.strip()
+            if generated_history:
+                history_text = (
+                    f"{history_text}\n\n{generated_history}"
+                    if history_text else generated_history
+                )
             messages, extra = self.build_messages(enriched_task, tools_description, history_text)
             extra = self._merge_llm_extra(extra)
 

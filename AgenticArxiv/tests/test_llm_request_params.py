@@ -21,7 +21,9 @@ import tools.pdf_download_tool  # noqa: F401,E402
 import tools.pdf_translate_tool  # noqa: F401,E402
 
 from agents.agent_engine import ReActAgent  # noqa: E402
+from agents.prompt_templates import build_visible_setup_context  # noqa: E402
 from agents.side_effects import LocalSideEffectManager  # noqa: E402
+from rl.grpo_reward import build_prompt_dataset  # noqa: E402
 from utils.llm_client import TransformersLLMClient  # noqa: E402
 
 
@@ -72,6 +74,56 @@ class TestLlmExtra(unittest.TestCase):
     def test_default_is_empty_dict_not_none(self):
         agent = ReActAgent(CapturingClient(), side_effect_mgr=LocalSideEffectManager())
         self.assertEqual(agent.llm_extra, {})
+
+
+class TestInitialHistory(unittest.TestCase):
+    def test_initial_history_is_visible_but_not_a_scored_policy_step(self):
+        client = CapturingClient()
+        agent = ReActAgent(client, side_effect_mgr=LocalSideEffectManager())
+        result = agent.run(
+            "把刚才那篇论文翻译一下",
+            session_id="seeded",
+            initial_history=(
+                "[任务开始前的会话状态]\n"
+                "- 此前已下载 ref=2 的论文；它现在是最近操作的论文。"
+            ),
+        )
+
+        prompt = client.calls[0]["messages"][0]["content"]
+        self.assertIn("此前已下载 ref=2", prompt)
+        # 初始状态仅作为 observation/context；模型轨迹仍只记录本轮生成。
+        self.assertEqual([step["action"] for step in result["history"]], ["FINISH"])
+        self.assertNotIn("此前已下载", str(result["history"]))
+
+    def test_benchmark_first_turn_matches_grpo_prompt(self):
+        task = {
+            "id": "ref_ctrl_null_translate",
+            "task": "把刚才那篇论文翻译一下",
+            "setup": [
+                {
+                    "name": "get_recently_submitted_cs_papers",
+                    "args": {"aspect": "AI", "days": 7, "max_results": 5},
+                },
+                {"name": "download_arxiv_pdf", "args": {"ref": 2}},
+            ],
+            # 这些字段只能供 reward 使用，不能出现在模型 prompt 中。
+            "expected_tools": ["translate_arxiv_pdf"],
+            "expected_tool_args": [{"ref": None}],
+        }
+        expected = build_prompt_dataset([task])[0]["prompt"][0]["content"]
+
+        client = CapturingClient()
+        ReActAgent(client, side_effect_mgr=LocalSideEffectManager()).run(
+            task["task"],
+            session_id="benchmark-visible-state",
+            initial_history=build_visible_setup_context(task),
+        )
+        actual = client.calls[0]["messages"][0]["content"]
+
+        self.assertEqual(actual, expected)
+        self.assertNotIn(task["id"], actual)
+        self.assertNotIn("expected_tools", actual)
+        self.assertNotIn("expected_tool_args", actual)
 
 
 class TestTransformersClientResponse(unittest.TestCase):

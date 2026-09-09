@@ -1383,3 +1383,97 @@ task id 来作弊。旧实现只用可见 prompt 文本反查 task id，在8任�
 这个问题体现了 Agent 任务中“观察文本相同但隐状态不同”的部分可观测性。训练样本身份不能只由
 自然语言字符串决定；环境元数据和模型可见 token 必须分层传递，否则会把状态条件相反的任务错误
 合并，造成 setup 与奖励标签冲突。
+
+### 25.7 从“路由正确”继续修复到“状态可学习”
+
+隐藏 `_task_id` 只修复了训练框架的路由：它能让两个相同用户文本分别进入空会话环境和已铺设
+setup 的环境，并选择各自的 reward oracle。但如果 `_task_id` 在 tokenization 前被删除、setup 又
+完全不以合法会话状态呈现给模型，那么策略在两条样本上仍看到完全相同的 token，却分别被要求
+“不调用翻译工具”和“调用翻译工具”。这属于 observation aliasing；任何确定性策略都无法同时
+满足，两个任务还会产生方向相反的梯度。
+
+本轮把修复补成三层分离：
+
+1. `build_visible_setup_context()` 只根据 `TaskSpec.setup` 描述任务开始前已经存在的论文列表、
+   最近操作论文以及 `ref=null` 是否可解析；不读取或渲染 task id、`steps`、`expected_tools`、
+   `expected_tool_args` 或 reward。
+2. GRPO 的 `build_prompt_dataset()` 把该状态放进 ReAct prompt 的初始 history；隐藏 `_task_id`
+   仍在 tokenizer 前删除。rollout 同时真实执行 setup，所以模型看到的状态与实际工具环境一致。
+3. BenchmarkRunner 在真实执行 `_apply_setup()` 后，把同一份可见状态作为 `initial_history` 传给
+   BaseAgent。初始状态只参与模型输入，不写入 `raw_result.history`，因此不会冒充策略动作参与
+   tool/process/outcome 评分。传入显式初始状态时，还会关闭 BaseAgent 原有的另一套论文标题注入，
+   确保 Benchmark 首轮 prompt 与 GRPO 首轮 prompt 完全一致。MCPAgent 的覆写入口同步透传该字段。
+
+以同一句“把刚才那篇论文翻译一下”为例：`infeasible_no_session` 可见“当前会话没有既有论文，
+ref=null 无法解析”；`ref_ctrl_null_translate` 可见“此前已检索论文并下载 ref=2，它是最近操作
+论文，ref=null 会指向它”。前者的高奖励动作是不调用工具并 FINISH，后者的高奖励动作是
+`translate_arxiv_pdf(ref=null)` 后 FINISH。两者现在既使用不同的真实环境，也拥有不同且业务合法的
+模型观测，不再依赖任务标签作答。
+
+新增回归测试覆盖：同文本任务的可见状态不同、隐藏 ID 仍正确选择 setup、tokenizer 永远收不到
+`_task_id`、标准答案字段不泄漏、初始状态不进入评分轨迹，以及 Benchmark 与 GRPO 的首轮 prompt
+逐字一致。因为输入协议已经改变，旧的 v5 checkpoint 仍可作为历史结果保留，但下一轮 train 重扫
+和后续 GRPO 必须从冻结 SFT adapter 按新协议重新采样；新旧 reward/成功率不能直接视为同协议对比。
+
+### 25.8 不可行任务的终止语义奖励：堵住“空工具路径 + 假完成”漏洞
+
+按新协议从冻结 SFT 重扫 train 后，三个不可行任务共有 57 条满分轨迹，其中 35 条
+（61.4%）的最终 Thought 只是“任务要求的操作已经完成，应立即结束”。它们虽然没有误调工具，
+却没有识别并解释缺少会话、非法索引或论文不存在；旧奖励只验证空工具路径与 FINISH，因而将这种
+false completion 与正确拒绝都打成 1.0。这说明工具序列奖励已经正确，但业务终态仍不可验证。
+
+修复分为任务契约、训练奖励与评测指标三层：
+
+1. `TaskSpec` 新增 `terminal_mode` 与 `terminal_reason`。五个 infeasible 任务显式声明
+   `terminal_mode="blocked"`，并分别标注 `missing_context`、`invalid_reference`、
+   `paper_not_found` 或 `unsupported_capability`；普通任务保持默认 `completed`，旧43条 fixture
+   不新增字段，继续保持字节兼容。
+2. blocked 任务的奖励只读取最终 FINISH 的 Thought，不读取 Observation、task id、note 或标准
+   工具答案。Thought 必须同时含有“无法/非法/不存在”等阻塞语义和与原因码一致的证据词；这样
+   “无法执行”仍不够具体，“任务已完成”更不能拿满分。
+3. 在完整语义权重 `format=1, tool=3, argument=2, process=1, outcome=3` 下，奖励排序固定为：
+   具体说明原因并拒绝 `1.000`；只说无法执行但不说明原因 `0.700`；虚假声称完成 `0.625`；
+   幻觉调用失败工具为负分。这个顺序既提供组内梯度，也不会让模型仅靠套用“无法执行”刷满分。
+4. Benchmark 的 `is_strict_success` 同步加入 `terminal_semantics_accurate`，报告新增
+   `terminal_semantics_accuracy`；明确的假完成同时计入 `false_finish`。因此训练 reward 与离线
+   严格成功率使用同一业务终态，不会出现“训练认为学会了、评测仍把假完成算成功”的指标错位。
+5. `ReferencePolicy` 对 blocked 任务生成带具体原因的终止 Thought；`AlwaysFinishPolicy` 仍输出
+   泛化的“任务已完成”，不再被视为 exact reference。rollout 审计脚本新增
+   `explained_block / false_completion / ambiguous` 分类、占比与各类平均奖励。
+
+新增 `data/splits/v6_terminal_semantics_probe.json:terminal_probe`，只包含 train 内三个不可行任务
+与同文本正对照 `ref_ctrl_null_translate`。该轮必须从原始 SFT adapter、`lr=0`、G=4、每任务8组
+重扫；它只验证奖励与观测协议，不把输出 adapter 当训练产物，也不触碰 dev/IID/OOD。通过标准是：
+正确解释均值高于假完成，假完成高于幻觉工具调用；三个 blocked 任务能看到非零组内方差；正对照
+仍调用 `translate_arxiv_pdf(ref=null)`，不会被新的 blocked 规则误伤。
+
+四任务冻结探针实际得到128条 rollout、32组，其中31组有非零奖励方差。三个 blocked 任务的
+96条回答中，初版语义审计判为 `ambiguous=41`、`false_completion=54`、
+`explained_block=1`。逐条检查证明前两类不是词表漏判：模型主要输出“无法通过现有工具完成或
+参数无效”和“任务要求的操作已经完成”，没有说明会话为空、论文ID不存在或0违反1-based索引。
+
+唯一的满分解释来自 `infeasible_zero_index`：“无法完成任务，因为缺少必须的 ref 参数”。这也是
+奖励假阳性，因为用户已经给出 `ref=0`；问题不是参数缺失，而是取值非法。终止原因检查因此进一步
+收紧为双因子证据：`invalid_reference` 必须同时出现“ref/索引/序号”和“非法/无效/越界/1-based”等
+边界性质；其他原因也同样要求对象词与错误性质同时出现。收紧后本轮三个 blocked 任务没有真正的
+满分解释，说明下一轮不能把这些旧轨迹当作正确语义 seed，应通过专家示例或探索采样先建立正样本。
+
+正对照 `ref_ctrl_null_translate` 没有工具执行异常：32条中11条只调用一次翻译并满分，2条翻译后
+多查缓存得0.565，19条直接 FINISH 得-0.225。由此确认 setup 与工具环境正确，剩余失败属于策略
+决策而非环境路由。三个 blocked 任务的工具错误分别为11、17、5条；`unknown_id` 的幻觉调用率
+53.1%最高，是当前最难的边界识别任务。
+
+### 25.9 终止语义修复版 SFT 数据集
+
+完成专家 seed、参数化任务及语言增强数据的重新生成后，构建了
+`data/sft/sft_v4_terminalfix_train_mix.jsonl`。混合脚本及语义 fail-fast 校验通过，输出
+`SFT_MIX_OK`：共2928条逐决策监督样本、101个语义任务，固定 shuffle seed 为42。其中
+`original_train_linguistic` 为1020条（36个原始 train 任务，平均28.33条/任务），
+`parametric_v1_linguistic` 为1908条（65个 train 派生任务，平均29.35条/任务）。对应 manifest 为
+`data/sft/sft_v4_terminalfix_train_mix.jsonl.manifest.json`。
+
+新旧混合数据规模保持一致，目的是把实验变量限制为“终止标签质量”，而不是同时改变训练数据量。
+关键变化是旧数据中 blocked 任务的泛化拒绝和错误“任务已完成”标签已被替换为与任务契约一致的
+具体原因说明；增强阶段也会重新执行终止语义校验，遇到不满足 `terminal_reason` 的样本立即失败，
+防止错误标签再次进入正式混合数据。下一版 SFT 必须从原始 Qwen 基座重新训练，不能在旧 SFT 或
+GRPO adapter 上继续训练，否则无法把效果差异归因于这次数据修复。

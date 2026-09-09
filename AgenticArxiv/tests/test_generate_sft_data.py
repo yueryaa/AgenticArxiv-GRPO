@@ -128,6 +128,22 @@ class ExpertFailFastTest(unittest.TestCase):
             for row in rows
         ))
 
+    def test_blocked_expert_names_the_declared_reason(self):
+        spec = TaskSpec(
+            id="missing_context_probe",
+            task="翻译刚才那篇论文",
+            terminal_mode="blocked",
+            terminal_reason="missing_context",
+        )
+        rows = generate_deterministic_trajectories(
+            [spec], _FailingEnv(), "tools", source_split="train"
+        )
+        self.assertEqual(len(rows), 1)
+        answer = rows[0]["messages"][1]["content"]
+        self.assertIn("会话", answer)
+        self.assertIn("无法解析", answer)
+        self.assertIn("Action: FINISH", answer)
+
 
 if __name__ == "__main__":
     unittest.main()

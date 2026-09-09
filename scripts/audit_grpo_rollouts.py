@@ -5,9 +5,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_ROOT = REPO_ROOT / "AgenticArxiv"
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from benchmark.metrics import classify_blocked_terminal_semantics  # noqa: E402
+from benchmark.tasks_expanded import get_expanded_tasks  # noqa: E402
 
 
 FORMAT_FLAGS = {
@@ -47,6 +56,10 @@ def summarize(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     task_anomalies: Counter[str] = Counter()
     groups: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
     format_anomalous = 0
+    tasks_by_id = {task["id"]: task for task in get_expanded_tasks()}
+    terminal_counts: Counter[str] = Counter()
+    terminal_rewards: Dict[str, List[float]] = defaultdict(list)
+    task_terminal_counts: Dict[str, Counter[str]] = defaultdict(Counter)
 
     for row in rows:
         flags = set(row.get("active_anomalies") or [])
@@ -58,6 +71,15 @@ def summarize(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         if flags & FORMAT_FLAGS:
             format_anomalous += 1
         groups[(row.get("batch_index"), row.get("group_index"))].append(row)
+        task = tasks_by_id.get(task_id)
+        if task and task.get("expected_terminal_mode") == "blocked":
+            trajectory = row.get("trajectory") or {}
+            semantic = classify_blocked_terminal_semantics(
+                task, trajectory.get("history") or []
+            )
+            terminal_counts[semantic] += 1
+            terminal_rewards[semantic].append(float(row.get("reward") or 0.0))
+            task_terminal_counts[task_id][semantic] += 1
 
     zero_std_groups = 0
     duplicate_groups = 0
@@ -73,6 +95,7 @@ def summarize(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
 
     group_count = len(groups)
     anomalous_samples = sum(bool(row.get("active_anomalies")) for row in rows)
+    terminal_sample_count = sum(terminal_counts.values())
     return {
         "sample_count": len(rows),
         "group_count": group_count,
@@ -85,6 +108,22 @@ def summarize(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         "exact_duplicate_group_count": duplicate_groups,
         "exact_duplicate_group_fraction": duplicate_groups / group_count if group_count else 0.0,
         "anomaly_counts": dict(anomaly_counts.most_common()),
+        "terminal_semantics": {
+            "applicable_sample_count": terminal_sample_count,
+            "counts": dict(sorted(terminal_counts.items())),
+            "rates": {
+                name: count / terminal_sample_count
+                for name, count in sorted(terminal_counts.items())
+            } if terminal_sample_count else {},
+            "mean_reward_by_class": {
+                name: sum(values) / len(values)
+                for name, values in sorted(terminal_rewards.items())
+            },
+            "tasks": {
+                task_id: dict(sorted(counts.items()))
+                for task_id, counts in sorted(task_terminal_counts.items())
+            },
+        },
         "tasks": {
             task_id: {
                 "sample_count": count,
@@ -125,6 +164,13 @@ def print_report(summary: Dict[str, Any]) -> None:
         print("  (none)")
     for name, count in summary["anomaly_counts"].items():
         print(f"  {name}: {count}")
+    semantics = summary.get("terminal_semantics") or {}
+    if semantics.get("applicable_sample_count"):
+        print("blocked terminal semantics:")
+        for name, count in semantics["counts"].items():
+            rate = semantics["rates"][name]
+            mean_reward = semantics["mean_reward_by_class"][name]
+            print(f"  {name}: {count} ({rate:.1%}), mean_reward={mean_reward:.4f}")
 
 
 def print_examples(records: List[Dict[str, Any]], limit: int) -> None:

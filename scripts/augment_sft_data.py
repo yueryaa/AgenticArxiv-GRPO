@@ -22,6 +22,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGE_ROOT = REPO_ROOT / "AgenticArxiv"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
+from benchmark.metrics import classify_blocked_terminal_semantics  # noqa: E402
+from benchmark.task_spec import reference_terminal_thought  # noqa: E402
 from benchmark.tasks_expanded import get_expanded_tasks  # noqa: E402
 
 
@@ -69,9 +71,11 @@ def split_assistant_action(content: str) -> Tuple[str, str]:
     return thought, action
 
 
-def decision_thought(action: str) -> str:
+def decision_thought(action: str, task_def: Dict[str, Any] | None = None) -> str:
     raw = action.strip()
     if raw == "FINISH":
+        if task_def and task_def.get("expected_terminal_mode") == "blocked":
+            return f"Thought: {reference_terminal_thought(task_def, variant=1)}"
         return "Thought: 任务要求的操作已经完成，应立即结束，避免产生额外工具调用"
     try:
         parsed = json.loads(raw)
@@ -140,6 +144,7 @@ def augment_validated_rows(
         raise ValueError("待扩增数据为空")
     augmented: List[Dict[str, Any]] = []
     seen = set()
+    task_catalog = {task["id"]: task for task in get_expanded_tasks()}
 
     for parent_index, parent in enumerate(seed_rows):
         messages = parent["messages"]
@@ -148,7 +153,25 @@ def augment_validated_rows(
         _, original_task, _ = split_prompt_task(prompt)
         original_thought, action = split_assistant_action(assistant)
         parent_hash = canonical_hash(messages)
-        thoughts = (original_thought, decision_thought(action))
+        contract_id = parent.get("parent_task_id") or parent.get("source_task_id")
+        task_def = task_catalog.get(str(contract_id))
+        thoughts = (original_thought, decision_thought(action, task_def))
+
+        if (
+            action.strip() == "FINISH"
+            and task_def
+            and task_def.get("expected_terminal_mode") == "blocked"
+        ):
+            for thought in thoughts:
+                semantic = classify_blocked_terminal_semantics(
+                    task_def,
+                    [{"thought": thought, "action": "FINISH"}],
+                )
+                if semantic != "explained_block":
+                    raise ValueError(
+                        "blocked FINISH seed 没有说明正确阻塞原因: "
+                        f"task={contract_id}, semantic={semantic}, thought={thought!r}"
+                    )
 
         for task_variant, wrapper in enumerate(TASK_WRAPPERS):
             varied_task = wrapper.format(task=original_task)

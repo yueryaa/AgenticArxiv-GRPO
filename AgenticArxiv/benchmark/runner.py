@@ -127,10 +127,17 @@ class BenchmarkRunner:
                         self._start_generation_stream(task_id, trial)
                         agent = self._create_agent(
                             agent_type, task_def.get("max_iterations"))
+                        # setup 是当前请求之前已经发生的会话历史。环境状态由
+                        # _apply_setup 真实铺设；同一份声明再渲染为模型可见上下文，
+                        # 使 Benchmark 与 GRPO 面对一致的可观测状态。它不进入
+                        # raw_result.history，因此不会被当作策略动作参与评分。
+                        from agents.prompt_templates import build_visible_setup_context
+
                         raw = agent.run(
                             task=task_def["task"],
                             agent_model=self.model,
                             session_id=session_id,
+                            initial_history=build_visible_setup_context(task_def),
                         )
                         metrics = extract_metrics(task_def, raw, agent_type, trial, session_id=session_id)
                         br = BenchmarkResult(

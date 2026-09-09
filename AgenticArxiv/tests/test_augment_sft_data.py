@@ -13,10 +13,14 @@ from augment_sft_data import (  # noqa: E402
     TASK_END,
     TASK_START,
     augment_rows,
+    augment_validated_rows,
     replace_prompt_task,
     split_assistant_action,
     split_prompt_task,
 )
+from benchmark.metrics import classify_blocked_terminal_semantics  # noqa: E402
+from benchmark.task_spec import reference_terminal_thought  # noqa: E402
+from benchmark.tasks_expanded import get_expanded_tasks  # noqa: E402
 
 
 def _prompt(task="训练任务", history="历史保持不变"):
@@ -71,6 +75,48 @@ class ActionInvariantTest(unittest.TestCase):
             _, actual_action = split_assistant_action(row["messages"][1]["content"])
             self.assertEqual(actual_action, action)
             self.assertEqual(row["parent_sample_sha256"], rows[0]["parent_sample_sha256"])
+
+    def test_blocked_finish_augmentation_preserves_specific_reason(self):
+        task = next(
+            task for task in get_expanded_tasks()
+            if task["id"] == "infeasible_no_session"
+        )
+        parent = {
+            "source_task_id": task["id"],
+            "source_split": "v2_62.json:train",
+            "trajectory_step": 0,
+            "messages": [
+                {"role": "user", "content": _prompt(task["task"])},
+                {"role": "assistant", "content": (
+                    f"Thought: {reference_terminal_thought(task)}\nAction: FINISH"
+                )},
+            ],
+        }
+        rows = augment_validated_rows([parent])
+        self.assertEqual(len(rows), 12)
+        for row in rows:
+            thought, action = split_assistant_action(row["messages"][1]["content"])
+            semantic = classify_blocked_terminal_semantics(
+                task, [{"thought": thought, "action": action.strip()}]
+            )
+            self.assertEqual(semantic, "explained_block")
+
+    def test_old_generic_blocked_seed_fails_fast(self):
+        task = next(
+            task for task in get_expanded_tasks()
+            if task["id"] == "infeasible_no_session"
+        )
+        parent = {
+            "source_task_id": task["id"],
+            "messages": [
+                {"role": "user", "content": _prompt(task["task"])},
+                {"role": "assistant", "content": (
+                    "Thought: 该任务无法通过现有工具完成或参数无效\nAction: FINISH"
+                )},
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "blocked FINISH seed"):
+            augment_validated_rows([parent])
 
 
 class LeakageGuardTest(unittest.TestCase):

@@ -51,6 +51,9 @@ class TaskMetrics:
     # 指代解析准确率。未声明 expected_paper 时同样保持中性分，但标记为不适用。
     ref_score: float = 1.0
     ref_applicable: bool = False
+    # blocked 任务需要在最终 Thought 中说明具体阻塞原因；普通任务不适用。
+    terminal_semantics_accurate: bool = True
+    terminal_semantics_applicable: bool = False
 
     # --- 原始数据 ---
     error: Optional[str] = None
@@ -71,6 +74,7 @@ def is_strict_success(metrics: TaskMetrics) -> bool:
         and metrics.ref_score == 1.0
         and metrics.parse_failures == 0
         and metrics.tool_exec_failures == 0
+        and metrics.terminal_semantics_accurate
     )
 
 
@@ -121,7 +125,22 @@ def extract_metrics(
     if arg_score is None:
         arg_score = 1.0
 
-    false_finish = is_false_finish(termination_type, tool_sequence, expected_tools)
+    terminal_semantics_applicable = (
+        task_def.get("expected_terminal_mode") == "blocked"
+    )
+    terminal_semantics_kind = (
+        classify_blocked_terminal_semantics(task_def, history)
+        if terminal_semantics_applicable
+        else "not_applicable"
+    )
+    terminal_semantics_accurate = (
+        terminal_semantics_kind == "explained_block"
+        if terminal_semantics_applicable else True
+    )
+    false_finish = (
+        is_false_finish(termination_type, tool_sequence, expected_tools)
+        or terminal_semantics_kind == "false_completion"
+    )
 
     ref_applicable = bool(expected_paper) or bool(
         expected_paper_ids and any(expected_paper_ids)
@@ -166,8 +185,92 @@ def extract_metrics(
         false_finish=false_finish,
         ref_score=ref_score,
         ref_applicable=ref_applicable,
+        terminal_semantics_accurate=terminal_semantics_accurate,
+        terminal_semantics_applicable=terminal_semantics_applicable,
         error=error,
     )
+
+
+def classify_blocked_terminal_semantics(
+    task_def: Dict[str, Any], history: Sequence[Dict[str, Any]]
+) -> str:
+    """分类 blocked 任务的最终 Thought：具体拒绝、假完成或含糊终止。
+
+    只读模型最终 FINISH 的 Thought，不读 Observation、task id、note 或标准
+    工具答案。任务只提供抽象原因码，以免把参考答案文本泄漏给策略。
+    """
+    terminal_thought = ""
+    for step in reversed(history):
+        if str(step.get("action", "")).strip().upper() == "FINISH":
+            terminal_thought = str(step.get("thought", "")).strip().lower()
+            break
+
+    blocked_markers = (
+        "无法", "不能", "做不到", "不可", "不支持", "能力范围", "能力边界",
+        "不存在", "未找到", "找不到", "无效", "非法", "超出", "越界", "缺少",
+        "没有", "不在", "未提供", "请提供", "需要提供", "无从指代", "无法确定",
+        "cannot", "can't", "unable", "unsupported", "not found", "does not exist",
+        "invalid", "out of range", "missing", "not provided", "need context",
+    )
+    false_completion_markers = (
+        "任务已完成", "操作已完成", "已经完成", "已成功完成", "任务完成",
+        "operation completed", "task completed", "successfully completed",
+        "already completed", "done successfully",
+    )
+    expected_reason = str(task_def.get("expected_terminal_reason") or "")
+    reason_is_grounded = _terminal_reason_is_grounded(
+        terminal_thought, expected_reason
+    )
+    if (
+        any(marker in terminal_thought for marker in blocked_markers)
+        and reason_is_grounded
+    ):
+        return "explained_block"
+    if any(marker in terminal_thought for marker in false_completion_markers):
+        return "false_completion"
+    return "ambiguous"
+
+
+def _terminal_reason_is_grounded(text: str, reason: str) -> bool:
+    """要求“对象 + 错误性质”同时出现，避免只蹭一个关键词拿满分。
+
+    例如 ``缺少必须的 ref 参数`` 对 ``ref=0`` 任务并不正确：用户已经给了
+    ref，问题是 0 违反 1-based 索引约束。旧判据看到 ``ref`` 就通过，这个
+    双因子判据要求同时出现“索引/ref”和“非法/越界/从1开始”。
+    """
+    def has_any(markers: Sequence[str]) -> bool:
+        return any(marker in text for marker in markers)
+
+    if reason == "missing_context":
+        return has_any((
+            "会话", "上下文", "刚才", "指代", "最近操作", "session", "context",
+            "referent", "previous paper",
+        )) and has_any((
+            "没有", "缺少", "未提供", "无从", "无法解析", "不能确定", "找不到",
+            "missing", "not provided", "no ", "cannot resolve", "unknown",
+        ))
+    if reason == "invalid_reference":
+        return has_any((
+            "索引", "序号", "ref", "第0篇", "第20篇", "index", "reference",
+        )) and has_any((
+            "无效", "非法", "超出", "越界", "范围", "上限", "下限", "从 1",
+            "从1", "1-based", "invalid", "out of range", "outside", "zero",
+        ))
+    if reason == "paper_not_found":
+        return has_any((
+            "论文", "arxiv", "id", "快照", "记录", "paper", "snapshot", "record",
+        )) and has_any((
+            "不存在", "未找到", "找不到", "不在", "无记录", "unknown", "not found",
+            "does not exist", "absent",
+        ))
+    if reason == "unsupported_capability":
+        return has_any((
+            "工具", "功能", "能力", "邮箱", "邮件", "tool", "capability", "email",
+        )) and has_any((
+            "不支持", "无法", "不能", "做不到", "超出", "范围", "边界", "unsupported",
+            "cannot", "unable", "out of scope",
+        ))
+    return False
 
 
 def _get_termination_type(history: List[Dict]) -> str:

@@ -10,7 +10,13 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from benchmark.metrics import TaskMetrics, argument_match_score, extract_metrics, lcs_length
+from benchmark.metrics import (
+    TaskMetrics,
+    argument_match_score,
+    classify_blocked_terminal_semantics,
+    extract_metrics,
+    lcs_length,
+)
 
 
 TERMINAL_ACTIONS = {"FINISH", "FORCE_STOP", "ERROR"}
@@ -119,7 +125,7 @@ class RewardCalculator:
                 task_def.get("expected_paper_ids"),
             ),
             "process": self._process_score(history, metrics),
-            "outcome": self._outcome_score(metrics),
+            "outcome": self._outcome_score(task_def, history, metrics),
         }
         schedule = self.schedule(training_step)
         active = {
@@ -212,7 +218,11 @@ class RewardCalculator:
         return _clip(good_steps / len(history) - 0.25 * failures - 0.1 * extras)
 
     @staticmethod
-    def _outcome_score(metrics: TaskMetrics) -> float:
+    def _outcome_score(
+        task_def: Mapping[str, Any],
+        history: Sequence[Dict[str, Any]],
+        metrics: TaskMetrics,
+    ) -> float:
         if metrics.termination_type == "ERROR":
             return -1.0
         if metrics.termination_type == "FORCE_STOP":
@@ -223,6 +233,23 @@ class RewardCalculator:
         # still receive positive outcome credit and outrank a clean trajectory.
         if metrics.tool_exec_failures > 0:
             return -1.0
+        # “不可行”任务的正确结果不是空轨迹本身，而是识别能力边界并向用户
+        # 解释原因。否则一句泛化的“任务已完成”+ FINISH 会与真正的拒绝同分，
+        # GRPO 反而会强化 false completion。该契约由任务声明显式开启，普通
+        # completed 任务不受文本启发式影响。
+        if (
+            task_def.get("expected_terminal_mode") == "blocked"
+            and metrics.task_completed
+            and metrics.tool_call_accurate
+        ):
+            terminal_semantics = classify_blocked_terminal_semantics(task_def, history)
+            if terminal_semantics == "explained_block":
+                return 1.0
+            if terminal_semantics == "false_completion":
+                return -0.25
+            # 没有说完成，也没有给出可识别的阻塞原因：保留少量格式/停止分，
+            # 但明显低于正确解释，促使模型学会可审计的终止理由。
+            return 0.0
         if metrics.task_completed and metrics.tool_call_accurate:
             # 工具名对了不等于任务完成。`tool_call_accurate` 只比较工具序列，
             # 问 cs.CL 却搜了 cs.AI 在这里完全相等——要的东西根本没拿到，

@@ -68,6 +68,8 @@ def build_parametric_tasks() -> List[DerivedTask]:
                 setup=tuple(setup),
                 template=parent_spec.template,
                 requires_offline=True,
+                terminal_mode=parent_spec.terminal_mode,
+                terminal_reason=parent_spec.terminal_reason,
                 max_iterations=parent_spec.max_iterations,
                 note=f"parametric_v1 parent={parent}",
             ),
@@ -410,6 +412,8 @@ def main() -> None:
             "parent_task_id": item.parent_task_id,
             "task": item.spec.task,
             "steps": [{"name": s.tool, "args": s.args} for s in item.spec.steps],
+            "terminal_mode": item.spec.terminal_mode,
+            "terminal_reason": item.spec.terminal_reason,
             "setup": [{"name": s.tool, "args": s.args} for s in item.spec.setup],
             "parameters": dict(item.parameters),
         }

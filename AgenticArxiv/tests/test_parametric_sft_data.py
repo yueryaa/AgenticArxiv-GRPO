@@ -64,6 +64,18 @@ class ParametricSftTaskTest(unittest.TestCase):
             if item.spec.category == "composite":
                 self.assertEqual(len(item.spec.steps), 2, item.spec.id)
 
+    def test_infeasible_variants_preserve_terminal_contract(self):
+        blocked = [
+            item for item in self.derived
+            if item.parent_task_id.startswith("infeasible_")
+        ]
+        self.assertTrue(blocked)
+        for item in blocked:
+            parent = self.by_id[item.parent_task_id]
+            with self.subTest(task=item.spec.id):
+                self.assertEqual(item.spec.terminal_mode, "blocked")
+                self.assertEqual(item.spec.terminal_reason, parent.terminal_reason)
+
 
 if __name__ == "__main__":
     unittest.main()

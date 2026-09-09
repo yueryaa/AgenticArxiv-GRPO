@@ -367,6 +367,34 @@ class RolloutAuditWriterTest(unittest.TestCase):
             self.assertEqual(summary["saved_samples"], 2)
             self.assertEqual(summary["anomalous_samples"], 0)
 
+    def test_recomputed_summary_audits_blocked_terminal_semantics(self):
+        def row(thought, reward, generation):
+            return {
+                "task_id": "infeasible_no_session",
+                "batch_index": 0,
+                "group_index": 0,
+                "generation_index": generation,
+                "reward": reward,
+                "group_reward_std": 0.2,
+                "trajectory": {"history": [{
+                    "thought": thought,
+                    "action": "FINISH",
+                    "observation": "任务结束",
+                }]},
+                "raw_assistant_turns": [thought],
+                "active_anomalies": [],
+            }
+
+        summary = summarize([
+            row("当前会话没有最近操作的论文，无法解析指代", 1.0, 0),
+            row("任务已完成", 0.625, 1),
+        ])
+        semantics = summary["terminal_semantics"]
+        self.assertEqual(semantics["applicable_sample_count"], 2)
+        self.assertEqual(semantics["counts"]["explained_block"], 1)
+        self.assertEqual(semantics["counts"]["false_completion"], 1)
+        self.assertEqual(semantics["mean_reward_by_class"]["explained_block"], 1.0)
+
     def test_rejects_mixed_tasks_inside_one_grpo_group(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             writer = RolloutAuditWriter(

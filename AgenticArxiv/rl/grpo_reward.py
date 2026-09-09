@@ -632,14 +632,21 @@ def build_prompt_dataset(tasks: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
     prompt 用的就是推理时真正送进模型的那段 ReAct prompt（含工具描述与格式约束），
     保证训练与推理的输入分布一致。
     """
-    from agents.prompt_templates import format_tool_description, get_react_prompt
+    from agents.prompt_templates import (
+        build_visible_setup_context,
+        format_tool_description,
+        get_react_prompt,
+    )
     from tools.tool_registry import registry
 
     tools_description = format_tool_description(registry.list_tools())
     rows = []
     for task in tasks:
+        visible_context = build_visible_setup_context(task)
         prompt = get_react_prompt(
-            task=task["task"], tools_description=tools_description, history=""
+            task=task["task"],
+            tools_description=tools_description,
+            history=visible_context,
         )
         rows.append({
             "prompt": [{

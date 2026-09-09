@@ -44,7 +44,7 @@ from agents.prompt_templates import format_tool_description, get_react_prompt
 from agents.side_effects import LocalSideEffectManager
 from benchmark.metrics import extract_metrics, is_strict_success
 from benchmark.splits import load_split
-from benchmark.task_spec import build
+from benchmark.task_spec import build, reference_terminal_thought
 from benchmark.tasks import BENCHMARK_SPECS, get_all_tasks
 from rl.env import MockArxivEnv
 from tools.tool_registry import registry
@@ -241,10 +241,11 @@ def generate_deterministic_trajectories(
                     f"SFT depends_on 前置搜索失败: task={spec.id}, args={search_args}"
                 ) from exc
 
+        task_def = spec.to_task()
         if not spec.steps:
-            # infeasible 任务：直接结束
+            # blocked 任务：不调工具，并说明任务声明的具体阻塞原因。
             history.append({
-                "thought": "该任务无法通过现有工具完成或参数无效",
+                "thought": reference_terminal_thought(task_def),
                 "action": "FINISH",
                 "observation": "任务完成",
             })
@@ -286,7 +287,7 @@ def generate_deterministic_trajectories(
             })
 
         metrics = extract_metrics(
-            spec.to_task(),
+            task_def,
             {"history": history},
             agent_type="deterministic_expert",
             trial=0,
