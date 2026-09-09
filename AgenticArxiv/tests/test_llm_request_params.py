@@ -75,6 +75,25 @@ class TestLlmExtra(unittest.TestCase):
 
 
 class TestTransformersClientResponse(unittest.TestCase):
+    def test_generation_stream_is_stable_and_independent_of_prior_call_count(self):
+        first = TransformersLLMClient.__new__(TransformersLLMClient)
+        first.seed = 42
+        first._calls = 99
+        first.start_generation_stream("search_AI_1d_3:0")
+        expected_seed = first._stream_seed
+
+        second = TransformersLLMClient.__new__(TransformersLLMClient)
+        second.seed = 42
+        second._calls = 3
+        second.start_generation_stream("search_AI_1d_3:0")
+
+        self.assertEqual(first._calls, 0)
+        self.assertEqual(second._calls, 0)
+        self.assertEqual(second._stream_seed, expected_seed)
+
+        second.start_generation_stream("search_AI_1d_3:1")
+        self.assertNotEqual(second._stream_seed, expected_seed)
+
     def test_adapts_local_generation_to_openai_response(self):
         import torch
 
@@ -91,10 +110,14 @@ class TestTransformersClientResponse(unittest.TestCase):
                 return "Thought: x\nAction: FINISH\nObservation: invented"
 
         class Model:
+            def __init__(self):
+                self.generation_kwargs = None
+
             def parameters(self):
                 return iter([torch.nn.Parameter(torch.zeros(1))])
 
             def generate(self, **kwargs):
+                self.generation_kwargs = kwargs
                 return torch.tensor([[1, 2, 3, 4, 5]])
 
         client = TransformersLLMClient.__new__(TransformersLLMClient)
@@ -113,6 +136,8 @@ class TestTransformersClientResponse(unittest.TestCase):
         )
         self.assertEqual(response["usage"]["prompt_tokens"], 2)
         self.assertEqual(response["usage"]["completion_tokens"], 3)
+        self.assertEqual(client.model.generation_kwargs["stop_strings"], ["Observation:"])
+        self.assertIs(client.model.generation_kwargs["tokenizer"], client.tokenizer)
 
 
 if __name__ == "__main__":

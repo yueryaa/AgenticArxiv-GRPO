@@ -1,0 +1,122 @@
+[1mdiff --git a/Overview.md b/Overview.md[m
+[1mindex 547238c..378a655 100644[m
+[1m--- a/Overview.md[m
+[1m+++ b/Overview.md[m
+[36m@@ -60,6 +60,7 @@[m [mdef init_db():[m
+ ```[m
+ [m
+ **特性**：[m
+[32m+[m
+ - ✅ 幂等性（可安全重复调用）[m
+ - ✅ 无需 Alembic/FlywayDB[m
+ - ✅ 自动创建索引[m
+[36m@@ -136,13 +137,14 @@[m [mcd AgenticArxivWeb && npm run dev -- --port 5173[m
+ [m
+ ### 三种 Agent 模式的差异[m
+ [m
+[31m-| 模式 | 解析方式 | 执行方式 | 优点 | 缺点 | 最佳用途 |[m
+[31m-|---|---|---|---|---|---|[m
+[31m-| **regex** | 正则 | 进程内 | 快、简、稳 | JSON 格式敏感 | 推荐默认 |[m
+[31m-| **mcp** | 正则 | JSON-RPC | 标准、隔离 | 延迟、复杂 | 团队开发 |[m
+[31m-| **skill_cli** | 正则 | subprocess | 易理解 | 子进程开销 | 学习研究 |[m
+[32m+[m[32m| 模式                | 解析方式 | 执行方式   | 优点       | 缺点          | 最佳用途 |[m
+[32m+[m[32m| ------------------- | -------- | ---------- | ---------- | ------------- | -------- |[m
+[32m+[m[32m| **regex**     | 正则     | 进程内     | 快、简、稳 | JSON 格式敏感 | 推荐默认 |[m
+[32m+[m[32m| **mcp**       | 正则     | JSON-RPC   | 标准、隔离 | 延迟、复杂    | 团队开发 |[m
+[32m+[m[32m| **skill_cli** | 正则     | subprocess | 易理解     | 子进程开销    | 学习研究 |[m
+ [m
+ **如何切换**？编辑 `.env`：[m
+[32m+[m
+ ```env[m
+ AGENT_TYPE=regex  # 改为 mcp 或 skill_cli[m
+ ```[m
+[36m@@ -271,16 +273,15 @@[m [msudo systemctl start agentic-arxiv-api[m
+ [m
+ ## 关键代码位置[m
+ [m
+[31m-| 功能 | 文件 | 行号 |[m
+[31m-|---|---|---|[m
+[31m-| Agent 执行循环 | `agents/base_agent.py` | 66-173 |[m
+[31m-| 副作用处理 | `agents/base_agent.py` | 192-277 |[m
+[31m-| 数据库初始化 | `api/app.py` | 19-25 |[m
+[31m-| 数据库初始化 | `models/db.py` | 27-30 |[m
+[31m-| ReAct 解析 | `agents/agent_engine.py` | 58-121 |[m
+[31m-| MCP 工作流 | `mcp_protocol/mcp_agent.py` | 96-148 |[m
+[31m-| Skill 解析 | `skill_cli/skill_agent.py` | 157-197 |[m
+[31m-| 工具注册 | `tools/tool_registry.py` | - |[m
+[31m-| 日志记录 | `services/log_service.py` | - |[m
+[31m-| SSE 推送 | `services/event_bus.py` | - |[m
+[31m-[m
+[32m+[m[32m| 功能           | 文件                          | 行号    |[m
+[32m+[m[32m| -------------- | ----------------------------- | ------- |[m
+[32m+[m[32m| Agent 执行循环 | `agents/base_agent.py`      | 66-173  |[m
+[32m+[m[32m| 副作用处理     | `agents/base_agent.py`      | 192-277 |[m
+[32m+[m[32m| 数据库初始化   | `api/app.py`                | 19-25   |[m
+[32m+[m[32m| 数据库初始化   | `models/db.py`              | 27-30   |[m
+[32m+[m[32m| ReAct 解析     | `agents/agent_engine.py`    | 58-121  |[m
+[32m+[m[32m| MCP 工作流     | `mcp_protocol/mcp_agent.py` | 96-148  |[m
+[32m+[m[32m| Skill 解析     | `skill_cli/skill_agent.py`  | 157-197 |[m
+[32m+[m[32m| 工具注册       | `tools/tool_registry.py`    | -       |[m
+[32m+[m[32m| 日志记录       | `services/log_service.py`   | -       |[m
+[32m+[m[32m| SSE 推送       | `services/event_bus.py`     | -       |[m
+[1mdiff --git a/Overview.md b/Overview.md[m
+[1mindex 547238c..378a655 100644[m
+[1m--- a/Overview.md[m
+[1m+++ b/Overview.md[m
+[36m@@ -60,6 +60,7 @@[m [mdef init_db():[m
+ ```[m
+ [m
+ **特性**：[m
+[32m+[m
+ - ✅ 幂等性（可安全重复调用）[m
+ - ✅ 无需 Alembic/FlywayDB[m
+ - ✅ 自动创建索引[m
+[36m@@ -136,13 +137,14 @@[m [mcd AgenticArxivWeb && npm run dev -- --port 5173[m
+ [m
+ ### 三种 Agent 模式的差异[m
+ [m
+[31m-| 模式 | 解析方式 | 执行方式 | 优点 | 缺点 | 最佳用途 |[m
+[31m-|---|---|---|---|---|---|[m
+[31m-| **regex** | 正则 | 进程内 | 快、简、稳 | JSON 格式敏感 | 推荐默认 |[m
+[31m-| **mcp** | 正则 | JSON-RPC | 标准、隔离 | 延迟、复杂 | 团队开发 |[m
+[31m-| **skill_cli** | 正则 | subprocess | 易理解 | 子进程开销 | 学习研究 |[m
+[32m+[m[32m| 模式                | 解析方式 | 执行方式   | 优点       | 缺点          | 最佳用途 |[m
+[32m+[m[32m| ------------------- | -------- | ---------- | ---------- | ------------- | -------- |[m
+[32m+[m[32m| **regex**     | 正则     | 进程内     | 快、简、稳 | JSON 格式敏感 | 推荐默认 |[m
+[32m+[m[32m| **mcp**       | 正则     | JSON-RPC   | 标准、隔离 | 延迟、复杂    | 团队开发 |[m
+[32m+[m[32m| **skill_cli** | 正则     | subprocess | 易理解     | 子进程开销    | 学习研究 |[m
+ [m
+ **如何切换**？编辑 `.env`：[m
+[32m+[m
+ ```env[m
+ AGENT_TYPE=regex  # 改为 mcp 或 skill_cli[m
+ ```[m
+[36m@@ -271,16 +273,15 @@[m [msudo systemctl start agentic-arxiv-api[m
+ [m
+ ## 关键代码位置[m
+ [m
+[31m-| 功能 | 文件 | 行号 |[m
+[31m-|---|---|---|[m
+[31m-| Agent 执行循环 | `agents/base_agent.py` | 66-173 |[m
+[31m-| 副作用处理 | `agents/base_agent.py` | 192-277 |[m
+[31m-| 数据库初始化 | `api/app.py` | 19-25 |[m
+[31m-| 数据库初始化 | `models/db.py` | 27-30 |[m
+[31m-| ReAct 解析 | `agents/agent_engine.py` | 58-121 |[m
+[31m-| MCP 工作流 | `mcp_protocol/mcp_agent.py` | 96-148 |[m
+[31m-| Skill 解析 | `skill_cli/skill_agent.py` | 157-197 |[m
+[31m-| 工具注册 | `tools/tool_registry.py` | - |[m
+[31m-| 日志记录 | `services/log_service.py` | - |[m
+[31m-| SSE 推送 | `services/event_bus.py` | - |[m
+[31m-[m
+[32m+[m[32m| 功能           | 文件                          | 行号    |[m
+[32m+[m[32m| -------------- | ----------------------------- | ------- |[m
+[32m+[m[32m| Agent 执行循环 | `agents/base_agent.py`      | 66-173  |[m
+[32m+[m[32m| 副作用处理     | `agents/base_agent.py`      | 192-277 |[m
+[32m+[m[32m| 数据库初始化   | `api/app.py`                | 19-25   |[m
+[32m+[m[32m| 数据库初始化   | `models/db.py`              | 27-30   |[m
+[32m+[m[32m| ReAct 解析     | `agents/agent_engine.py`    | 58-121  |[m
+[32m+[m[32m| MCP 工作流     | `mcp_protocol/mcp_agent.py` | 96-148  |[m
+[32m+[m[32m| Skill 解析     | `skill_cli/skill_agent.py`  | 157-197 |[m
+[32m+[m[32m| 工具注册       | `tools/tool_registry.py`    | -       |[m
+[32m+[m[32m| 日志记录       | `services/log_service.py`   | -       |[m
+[32m+[m[32m| SSE 推送       | `services/event_bus.py`     | -       |[m

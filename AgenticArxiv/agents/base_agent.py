@@ -20,6 +20,13 @@ from agents.side_effects import SideEffectManager, LocalSideEffectManager
 # 把本来完全正确的轨迹判成 accurate=False。
 TERMINAL_ACTIONS = ("FINISH", "FORCE_STOP", "ERROR")
 
+# 两种搜索都会产生“当前会话的候选论文列表”。后续下载、翻译和缓存查询
+# 都通过这份列表解析 ref，因此必须共用相同的状态写入和结果展示逻辑。
+PAPER_SEARCH_ACTIONS = (
+    "get_recently_submitted_cs_papers",
+    "search_arxiv_papers",
+)
+
 
 def is_terminal_action(name: Any) -> bool:
     """判断解析出的动作名是否代表「结束」而非一次工具调用。"""
@@ -345,8 +352,8 @@ class BaseAgent(ABC):
             except Exception:
                 pass
 
-            # arxiv 搜索结果存入 session
-            if tool_name == "get_recently_submitted_cs_papers":
+            # 两种 arXiv 搜索结果都存入同一个 session，供后续 ref 解析。
+            if tool_name in PAPER_SEARCH_ACTIONS:
                 # MCP 模式可能返回 dict（如 {"error": "..."}），兼容处理
                 if isinstance(result, dict):
                     if "error" in result:
@@ -356,7 +363,34 @@ class BaseAgent(ABC):
                         result = vals[0]
                 if isinstance(result, list):
                     if result:
-                        papers_obj = [Paper(**p) for p in result]
+                        # replay 对未知关键词会返回带显式标记的确定性回退池，
+                        # 它只用于保持环境可复现，不能伪装成真实命中，更不能
+                        # 覆盖当前会话的论文列表，否则后续 ref 会指向无关论文。
+                        fallback_meta = next(
+                            (
+                                paper.get("_mock_env")
+                                for paper in result
+                                if isinstance(paper, dict)
+                                and isinstance(paper.get("_mock_env"), dict)
+                                and paper["_mock_env"].get("offline_fallback")
+                            ),
+                            None,
+                        )
+                        if fallback_meta:
+                            message = fallback_meta.get(
+                                "message",
+                                "关键词未命中离线快照，回退结果不代表真实匹配。",
+                            )
+                            return (
+                                f"工具执行失败: {message}"
+                                "请检查 query 与 days 是否完整匹配任务要求。"
+                            )
+
+                        papers_obj = [
+                            Paper(**{key: value for key, value in paper.items() if not key.startswith("_")})
+                            if isinstance(paper, dict) else paper
+                            for paper in result
+                        ]
                         self.side_effects.set_last_papers(self.session_id, papers_obj)
                         papers_count = len(result)
                         paper_titles = [paper.get("title", "无标题") for paper in result[:3]]

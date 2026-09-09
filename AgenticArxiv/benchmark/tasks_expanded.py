@@ -698,9 +698,13 @@ _LONG_CHAIN: List[TaskSpec] = [
 ]
 
 
-EXPANDED_TASKS: List[Dict[str, Any]] = build(
+EXPANDED_SPECS: List[TaskSpec] = (
     _SEARCH + _KEYWORD_SEARCH + _OTHERS + _CONSTRAINTS + _INFEASIBLE + _LONG_CHAIN
 )
+
+# 生成器使用 TaskSpec（保留 Step/setup），Benchmark 使用展开后的 dict；两者必须
+# 来自同一对象列表，不能让训练标准答案和评测标准答案各维护一份。
+EXPANDED_TASKS: List[Dict[str, Any]] = build(EXPANDED_SPECS)
 
 
 def get_expanded_tasks() -> List[Dict[str, Any]]:

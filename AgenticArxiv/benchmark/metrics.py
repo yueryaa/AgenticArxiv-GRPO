@@ -39,15 +39,18 @@ class TaskMetrics:
     tool_call_accurate: bool = False
     parse_failures: int = 0
     tool_exec_failures: int = 0
-    # 参数级准确率（0~1）。没有 expected_tool_args 的任务恒为 1.0，不参与扣分。
+    # 参数级准确率（0~1）。没有 expected_tool_args 时 score 用 1.0 保持中性，
+    # applicable=False 让报告把它显示为 n/a，而不是虚假的 100%。
     # 只看工具名的话，「下载标题含 X 的那篇」即使下错论文，
     # 工具序列仍是 [download_arxiv_pdf]，会被判为准确。
     arg_score: float = 1.0
+    arg_applicable: bool = False
     # 声称完成但期望工具没做全。与 tool_call_accurate 的区别见 is_false_finish：
     # 后者对「做多了」也判 False，这里只抓「做少了」。
     false_finish: bool = False
-    # 指代解析准确率。未声明 expected_paper 的任务恒为 1.0，不参与扣分。
+    # 指代解析准确率。未声明 expected_paper 时同样保持中性分，但标记为不适用。
     ref_score: float = 1.0
+    ref_applicable: bool = False
 
     # --- 原始数据 ---
     error: Optional[str] = None
@@ -57,6 +60,18 @@ class TaskMetrics:
         d["tool_call_sequence"] = ",".join(d["tool_call_sequence"])
         d["expected_tools"] = ",".join(d["expected_tools"])
         return d
+
+
+def is_strict_success(metrics: TaskMetrics) -> bool:
+    """任务真正成功：正常结束，且工具、参数、指代和执行过程都正确。"""
+    return (
+        metrics.task_completed
+        and metrics.tool_call_accurate
+        and metrics.arg_score == 1.0
+        and metrics.ref_score == 1.0
+        and metrics.parse_failures == 0
+        and metrics.tool_exec_failures == 0
+    )
 
 
 def extract_metrics(
@@ -93,15 +108,30 @@ def extract_metrics(
     parse_failures = _count_parse_failures(history)
     tool_exec_failures = _count_tool_failures(history)
 
+    expected_tool_args = task_def.get("expected_tool_args")
+    expected_paper_ids = task_def.get("expected_paper_ids")
+    expected_paper = task_def.get("expected_paper")
+    # Backward compatibility for hand-written one-paper tasks.
+    if expected_paper_ids is None and expected_paper and len(expected_tools) == 1:
+        expected_paper_ids = [expected_paper]
+    arg_applicable = expected_tool_args is not None
     arg_score = argument_match_score(
-        history, task_def.get("expected_tool_args"), expected_tools
+        history, expected_tool_args, expected_tools, expected_paper_ids
     )
     if arg_score is None:
         arg_score = 1.0
 
     false_finish = is_false_finish(termination_type, tool_sequence, expected_tools)
 
-    ref_score = reference_resolution_score(history, task_def.get("expected_paper"))
+    ref_applicable = bool(expected_paper) or bool(
+        expected_paper_ids and any(expected_paper_ids)
+    )
+    if expected_paper_ids is not None:
+        ref_score = reference_resolution_score_by_step(
+            history, expected_tools, expected_paper_ids
+        )
+    else:
+        ref_score = reference_resolution_score(history, expected_paper)
     if ref_score is None:
         ref_score = 1.0
 
@@ -132,8 +162,10 @@ def extract_metrics(
         parse_failures=parse_failures,
         tool_exec_failures=tool_exec_failures,
         arg_score=arg_score,
+        arg_applicable=arg_applicable,
         false_finish=false_finish,
         ref_score=ref_score,
+        ref_applicable=ref_applicable,
         error=error,
     )
 
@@ -292,6 +324,40 @@ def reference_resolution_score(
     return sum(_same_paper(pid, expected_paper) for pid in resolved) / len(resolved)
 
 
+def reference_resolution_score_by_step(
+    history: Sequence[Dict[str, Any]],
+    expected_tools: Sequence[str],
+    expected_paper_ids: Sequence[Optional[str]],
+) -> Optional[float]:
+    """Score paper identity at the corresponding expected tool step.
+
+    Unlike the legacy single-paper helper this supports chains that operate on
+    several different papers.  Tool order remains strict; semantic equivalence
+    only relaxes the representation of ``ref``.
+    """
+    targets = [i for i, paper_id in enumerate(expected_paper_ids) if paper_id]
+    if not targets:
+        return None
+    actual = []
+    for step in history or []:
+        parsed = _parse_tool_action(step.get("action", ""))
+        if parsed is not None:
+            actual.append((parsed.get("name"), step.get("observation")))
+    scores = []
+    for index in targets:
+        if index >= len(actual) or index >= len(expected_tools):
+            scores.append(0.0)
+            continue
+        name, observation = actual[index]
+        paper_id = resolved_paper_id(observation)
+        scores.append(float(
+            name == expected_tools[index]
+            and bool(paper_id)
+            and _same_paper(paper_id, str(expected_paper_ids[index]))
+        ))
+    return sum(scores) / len(scores)
+
+
 def _check_tool_sequence(actual: List[str], expected: List[str]) -> bool:
     """检查实际工具调用是否与预期序列完全一致（严格顺序、无多余/重复调用）。
 
@@ -366,7 +432,12 @@ def _match_arg_value(predicted_val: Any, expected_val: Any, key: str = "") -> bo
     return False
 
 
-def argument_match_score(history, expected_args, expected_tools=None):
+def argument_match_score(
+    history,
+    expected_args,
+    expected_tools=None,
+    expected_paper_ids=None,
+):
     """参数级匹配度，返回 [0,1] 或 None（任务未声明 expected_tool_args）。
 
     每一步按「期望键里被答对的比例」打分，再对各步取平均。约定：
@@ -401,6 +472,7 @@ def argument_match_score(history, expected_args, expected_tools=None):
             actual.append((
                 parsed.get("name"),
                 parsed.get("parameters", parsed.get("args", {})) or {},
+                step.get("observation"),
             ))
 
     if not expected_args:
@@ -410,7 +482,9 @@ def argument_match_score(history, expected_args, expected_tools=None):
     for index, expected in enumerate(expected_args):
         if expected is None:
             continue
-        name, predicted = actual[index] if index < len(actual) else (None, {})
+        name, predicted, observation = (
+            actual[index] if index < len(actual) else (None, {}, None)
+        )
         if (
             expected_tools is not None
             and index < len(expected_tools)
@@ -422,10 +496,22 @@ def argument_match_score(history, expected_args, expected_tools=None):
         if not keys:
             scores.append(1.0 if not predicted else 0.0)
             continue
-        scores.append(
-            sum(_match_arg_value(predicted.get(k), v, k) for k, v in expected.items())
-            / len(keys)
-        )
+        matched = 0
+        for key, value in expected.items():
+            semantic_paper = (
+                key == "ref"
+                and expected_paper_ids is not None
+                and index < len(expected_paper_ids)
+                and expected_paper_ids[index]
+            )
+            if semantic_paper:
+                resolved = resolved_paper_id(observation)
+                matched += int(bool(resolved) and _same_paper(
+                    resolved, str(expected_paper_ids[index])
+                ))
+            else:
+                matched += int(_match_arg_value(predicted.get(key), value, key))
+        scores.append(matched / len(keys))
     return sum(scores) / len(scores) if scores else 1.0
 
 

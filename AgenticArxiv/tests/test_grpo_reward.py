@@ -11,6 +11,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
@@ -35,14 +36,18 @@ from rl.grpo_reward import (  # noqa: E402
 TASKS = {t["id"]: t for t in get_all_tasks()}
 TASK_ID = "search_01"
 
-CORRECT = ('Thought: 需要检索\n'
-           'Action: {"name":"get_recently_submitted_cs_papers",'
-           '"args":{"aspect":"AI","days":7,"max_results":5}}')
-WRONG_ARGS = ('Thought: 需要检索\n'
-              'Action: {"name":"get_recently_submitted_cs_papers",'
-              '"args":{"aspect":"CR","days":30,"max_results":99}}')
+CORRECT = (
+    "Thought: 需要检索\n"
+    'Action: {"name":"get_recently_submitted_cs_papers",'
+    '"args":{"aspect":"AI","days":7,"max_results":5}}'
+)
+WRONG_ARGS = (
+    "Thought: 需要检索\n"
+    'Action: {"name":"get_recently_submitted_cs_papers",'
+    '"args":{"aspect":"CR","days":30,"max_results":99}}'
+)
 WRONG_TOOL = 'Thought: 下载\nAction: {"name":"download_arxiv_pdf","args":{"ref":1}}'
-BARE_FINISH = 'Thought: 完成了\nAction: FINISH'
+BARE_FINISH = "Thought: 完成了\nAction: FINISH"
 JSON_FINISH = 'Thought: 完成了\nAction: {"name": "FINISH", "args": {}}'
 JSON_FORCE_STOP = 'Thought: 放弃\nAction: {"name": "FORCE_STOP", "args": {}}'
 BAD_JSON = "Thought: t\nAction: {'name': 'get_recently_submitted_cs_papers',}"
@@ -50,7 +55,8 @@ NO_ACTION = "Thought: 我先想想该怎么做"
 
 
 class FakeState:
-    def __init__(self, step): self.global_step = step
+    def __init__(self, step):
+        self.global_step = step
 
 
 class TestParseReactAction(unittest.TestCase):
@@ -74,8 +80,9 @@ class TestParseReactAction(unittest.TestCase):
         self.assertEqual(parse_react_action(JSON_FORCE_STOP), ("finish", None))
 
     def test_finish_case_insensitive(self):
-        self.assertEqual(parse_react_action('Thought: t\nAction: {"name": "finish"}')[0],
-                         "finish")
+        self.assertEqual(
+            parse_react_action('Thought: t\nAction: {"name": "finish"}')[0], "finish"
+        )
 
     def test_real_tool_still_parsed_after_finish_guard(self):
         kind, action = parse_react_action(WRONG_TOOL)
@@ -117,22 +124,33 @@ class TestMultiTurnTrajectory(unittest.TestCase):
             {
                 "role": "assistant",
                 "content": "先搜索",
-                "tool_calls": [{
-                    "type": "function",
-                    "function": {
-                        "name": "get_recently_submitted_cs_papers",
-                        "arguments": {"aspect": "CV", "days": 7, "max_results": 3},
-                    },
-                }],
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_recently_submitted_cs_papers",
+                            "arguments": {"aspect": "CV", "days": 7, "max_results": 3},
+                        },
+                    }
+                ],
             },
-            {"role": "tool", "name": "get_recently_submitted_cs_papers", "content": "3 papers"},
+            {
+                "role": "tool",
+                "name": "get_recently_submitted_cs_papers",
+                "content": "3 papers",
+            },
             {
                 "role": "assistant",
                 "content": "再下载",
-                "tool_calls": [{
-                    "type": "function",
-                    "function": {"name": "download_arxiv_pdf", "arguments": {"ref": 1}},
-                }],
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "download_arxiv_pdf",
+                            "arguments": {"ref": 1},
+                        },
+                    }
+                ],
             },
             {"role": "tool", "name": "download_arxiv_pdf", "content": "READY"},
             {"role": "assistant", "content": "已完成"},
@@ -149,18 +167,35 @@ class TestMultiTurnTrajectory(unittest.TestCase):
     def test_reward_uses_all_turns(self):
         completion = [
             {
-                "role": "assistant", "content": "",
-                "tool_calls": [{"type": "function", "function": {
-                    "name": "get_recently_submitted_cs_papers",
-                    "arguments": {"aspect": "CV", "days": 7, "max_results": 3},
-                }}],
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_recently_submitted_cs_papers",
+                            "arguments": {"aspect": "CV", "days": 7, "max_results": 3},
+                        },
+                    }
+                ],
             },
-            {"role": "tool", "name": "get_recently_submitted_cs_papers", "content": "3 papers"},
             {
-                "role": "assistant", "content": "",
-                "tool_calls": [{"type": "function", "function": {
-                    "name": "download_arxiv_pdf", "arguments": {"ref": 1},
-                }}],
+                "role": "tool",
+                "name": "get_recently_submitted_cs_papers",
+                "content": "3 papers",
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "download_arxiv_pdf",
+                            "arguments": {"ref": 1},
+                        },
+                    }
+                ],
             },
             {"role": "tool", "name": "download_arxiv_pdf", "content": "READY"},
             {"role": "assistant", "content": "done"},
@@ -171,7 +206,9 @@ class TestMultiTurnTrajectory(unittest.TestCase):
 
     def test_custom_rollout_masks_environment_tokens(self):
         class Tokenizer:
-            def apply_chat_template(self, prompt, tokenize=True, add_generation_prompt=True):
+            def apply_chat_template(
+                self, prompt, tokenize=True, add_generation_prompt=True
+            ):
                 return [1, 2]
 
             def __call__(self, text, add_special_tokens=False):
@@ -192,7 +229,8 @@ class TestMultiTurnTrajectory(unittest.TestCase):
             max_completion_length = 256
             model = Model()
 
-            def __init__(self): self.calls = 0
+            def __init__(self):
+                self.calls = 0
 
             def _generate_single_turn(self, prompt_ids, images, fields):
                 self.calls += 1
@@ -200,7 +238,8 @@ class TestMultiTurnTrajectory(unittest.TestCase):
                 return [[token] for _ in prompt_ids], None, {}
 
         class Environment:
-            def reset(self): return None
+            def reset(self):
+                return None
 
             def get_recently_submitted_cs_papers(self, **kwargs):
                 return [{"id": "x", "title": "paper"}]
@@ -222,8 +261,9 @@ class TestRewardOrdering(unittest.TestCase):
         self.fn = make_grpo_reward_fn(TASKS, env=None)
 
     def r(self, completion, step=0):
-        return self.fn(completions=[completion], task_id=[TASK_ID],
-                       trainer_state=FakeState(step))[0]
+        return self.fn(
+            completions=[completion], task_id=[TASK_ID], trainer_state=FakeState(step)
+        )[0]
 
     def test_not_a_placeholder(self):
         """回归：原实现是 `return [0.0 for _ in responses]`，奖励恒为 0。"""
@@ -242,14 +282,19 @@ class TestRewardOrdering(unittest.TestCase):
         self.assertGreater(self.r(BARE_FINISH), self.r(NO_ACTION))
 
     def test_batch_matches_elementwise(self):
-        batch = self.fn(completions=[CORRECT, WRONG_TOOL, BAD_JSON],
-                        task_id=[TASK_ID] * 3, trainer_state=FakeState(0))
+        batch = self.fn(
+            completions=[CORRECT, WRONG_TOOL, BAD_JSON],
+            task_id=[TASK_ID] * 3,
+            trainer_state=FakeState(0),
+        )
         self.assertEqual(len(batch), 3)
         self.assertEqual(batch, [self.r(CORRECT), self.r(WRONG_TOOL), self.r(BAD_JSON)])
 
     def test_unknown_task_id_is_neutral(self):
         self.assertEqual(
-            self.fn(completions=[CORRECT], task_id=["nope"], trainer_state=FakeState(0)),
+            self.fn(
+                completions=[CORRECT], task_id=["nope"], trainer_state=FakeState(0)
+            ),
             [0.0],
         )
 
@@ -263,10 +308,14 @@ class TestCurriculum(unittest.TestCase):
         fn = make_grpo_reward_fn(TASKS, env=None)
 
         def gap(step):
-            good = fn(completions=[CORRECT], task_id=[TASK_ID],
-                      trainer_state=FakeState(step))[0]
-            bad = fn(completions=[WRONG_ARGS], task_id=[TASK_ID],
-                     trainer_state=FakeState(step))[0]
+            good = fn(
+                completions=[CORRECT], task_id=[TASK_ID], trainer_state=FakeState(step)
+            )[0]
+            bad = fn(
+                completions=[WRONG_ARGS],
+                task_id=[TASK_ID],
+                trainer_state=FakeState(step),
+            )[0]
             return good - bad
 
         self.assertGreater(gap(60), gap(0))
@@ -282,6 +331,22 @@ class TestPromptDataset(unittest.TestCase):
         self.assertIn("Action:", content)
         self.assertIn("get_recently_submitted_cs_papers", content)
         self.assertIn("task_id", rows[0])
+        self.assertEqual(rows[0]["prompt"][0]["_task_id"], rows[0]["task_id"])
+
+    def test_duplicate_visible_prompts_keep_distinct_hidden_task_ids(self):
+        tasks = [
+            {"id": "empty_session", "task": "把刚才那篇论文翻译一下"},
+            {"id": "seeded_session", "task": "把刚才那篇论文翻译一下"},
+        ]
+        rows = build_prompt_dataset(tasks)
+        self.assertEqual(
+            rows[0]["prompt"][0]["content"],
+            rows[1]["prompt"][0]["content"],
+        )
+        self.assertEqual(
+            [row["prompt"][0]["_task_id"] for row in rows],
+            ["empty_session", "seeded_session"],
+        )
 
     def test_multiturn_prompt_is_conversational(self):
         rows = build_multiturn_prompt_dataset(get_all_tasks())
@@ -306,8 +371,9 @@ class FakeGenerationTrainer:
     def _generate_single_turn(self, prompt_ids, images, multimodal_fields):
         self.seen_batch_sizes.append(len(prompt_ids))
         # 每条都直接 FINISH，让 rollout 一轮结束
-        ids = self.processing_class("Thought: 完成\nAction: FINISH",
-                                    add_special_tokens=False)["input_ids"]
+        ids = self.processing_class(
+            "Thought: 完成\nAction: FINISH", add_special_tokens=False
+        )["input_ids"]
         return [list(ids) for _ in prompt_ids], None, None
 
 
@@ -326,11 +392,14 @@ class MultiTurnRolloutCardinalityTest(unittest.TestCase):
             def __call__(self, text, add_special_tokens=True):
                 return {"input_ids": [1, 2, 3]}
 
-            def apply_chat_template(self, prompt, tokenize=True, add_generation_prompt=True):
+            def apply_chat_template(
+                self, prompt, tokenize=True, add_generation_prompt=True
+            ):
                 return [4, 5]
 
             def decode(self, ids, skip_special_tokens=True):
                 return "Thought: 完成\nAction: FINISH"
+
         return Tok()
 
     def _rollout(self, num_prompts, num_generations):
@@ -340,7 +409,9 @@ class MultiTurnRolloutCardinalityTest(unittest.TestCase):
             def reset(self, *a, **k):
                 return ""
 
-        trainer = FakeGenerationTrainer(self._tokenizer(), num_generations=num_generations)
+        trainer = FakeGenerationTrainer(
+            self._tokenizer(), num_generations=num_generations
+        )
         fn = make_multiturn_rollout_func(lambda: _Env(), max_turns=2)
         prompts = [[{"role": "user", "content": "任务"}]] * num_prompts
         return fn(prompts, trainer), trainer
@@ -349,9 +420,15 @@ class MultiTurnRolloutCardinalityTest(unittest.TestCase):
         for num_prompts, num_generations in ((2, 2), (4, 2), (6, 3), (1, 1)):
             with self.subTest(prompts=num_prompts, generations=num_generations):
                 out, _ = self._rollout(num_prompts, num_generations)
-                for key in ("prompt_ids", "completion_ids", "env_mask", "trajectory_results"):
+                for key in (
+                    "prompt_ids",
+                    "completion_ids",
+                    "env_mask",
+                    "trajectory_results",
+                ):
                     self.assertEqual(
-                        len(out[key]), num_prompts,
+                        len(out[key]),
+                        num_prompts,
                         f"{key} 条数应等于传入的 prompts 条数，不能再乘一次 num_generations",
                     )
 
@@ -359,6 +436,79 @@ class MultiTurnRolloutCardinalityTest(unittest.TestCase):
         """展开一次会让每步生成量翻 num_generations 倍，显存和耗时都跟着翻。"""
         _, trainer = self._rollout(num_prompts=4, num_generations=2)
         self.assertEqual(trainer.seen_batch_sizes[0], 4)
+
+    def test_hidden_task_id_disambiguates_setup_without_reaching_tokenizer(self):
+        class RecordingTokenizer:
+            def __init__(self):
+                self.seen_prompts = []
+
+            def __call__(self, text, add_special_tokens=True):
+                return {"input_ids": [1, 2, 3]}
+
+            def apply_chat_template(
+                self, prompt, tokenize=True, add_generation_prompt=True
+            ):
+                self.seen_prompts.append(prompt)
+                return [4, 5]
+
+            def decode(self, ids, skip_special_tokens=True):
+                return "Thought: 完成\nAction: FINISH"
+
+        class Environment:
+            def reset(self, task_id=""):
+                self.task_id = task_id
+
+            def get_recently_submitted_cs_papers(self, **kwargs):
+                return [{"id": "paper-1"}]
+
+        tasks = {
+            "empty_session": {"id": "empty_session", "setup": []},
+            "seeded_session": {
+                "id": "seeded_session",
+                "setup": [
+                    {
+                        "name": "get_recently_submitted_cs_papers",
+                        "args": {"aspect": "AI", "days": 7, "max_results": 5},
+                    }
+                ],
+            },
+        }
+        visible = "完全相同的用户任务"
+        prompts = [
+            [{"role": "user", "content": visible, "_task_id": "empty_session"}],
+            [{"role": "user", "content": visible, "_task_id": "seeded_session"}],
+        ]
+        tokenizer = RecordingTokenizer()
+        trainer = FakeGenerationTrainer(
+            tokenizer, num_generations=1, max_completion_length=16
+        )
+        with patch("rl.grpo_reward.require_rollout_func_support"):
+            rollout = make_multiturn_rollout_func(
+                Environment,
+                max_turns=1,
+                tasks_by_id=tasks,
+                prompt_task_ids={},
+            )
+
+        output = rollout(prompts, trainer)
+
+        self.assertEqual(
+            [item["task_id"] for item in output["trajectory_results"]],
+            ["empty_session", "seeded_session"],
+        )
+        self.assertEqual(output["trajectory_results"][0]["setup_actions"], [])
+        self.assertEqual(
+            output["trajectory_results"][1]["setup_actions"],
+            tasks["seeded_session"]["setup"],
+        )
+        self.assertTrue(tokenizer.seen_prompts)
+        self.assertTrue(
+            all(
+                "_task_id" not in message
+                for prompt in tokenizer.seen_prompts
+                for message in prompt
+            )
+        )
 
 
 class TrlVersionGuardTest(unittest.TestCase):
@@ -372,9 +522,14 @@ class TrlVersionGuardTest(unittest.TestCase):
 
     def test_version_boundary(self):
         from rl.grpo_reward import rollout_func_supported
+
         for version, supported in (
-            ("0.20.0", False), ("0.25.1", False), ("0.27.9", False),
-            ("0.28.0", True), ("0.29.1", True), ("1.0.0", True),
+            ("0.20.0", False),
+            ("0.25.1", False),
+            ("0.27.9", False),
+            ("0.28.0", True),
+            ("0.29.1", True),
+            ("1.0.0", True),
         ):
             with self.subTest(version=version):
                 self.assertEqual(rollout_func_supported(version), supported)
@@ -382,20 +537,22 @@ class TrlVersionGuardTest(unittest.TestCase):
     def test_old_trl_raises_with_upgrade_hint(self):
         from unittest import mock
         import rl.grpo_reward as gr
+
         # 伪造一个装了旧版 trl 的环境，别依赖本机实际装的版本
         with mock.patch("importlib.metadata.version", return_value="0.25.1"):
             with self.assertRaises(SystemExit) as ctx:
                 gr.require_rollout_func_support()
         message = str(ctx.exception)
-        self.assertIn("trl>=0.28.0", message)   # 给出可执行的升级命令
-        self.assertIn("不会报错", message)       # 点明这是静默失效
-        self.assertIn("0.25.1", message)        # 报出当前实际装的版本
+        self.assertIn("trl>=0.28.0", message)  # 给出可执行的升级命令
+        self.assertIn("不会报错", message)  # 点明这是静默失效
+        self.assertIn("0.25.1", message)  # 报出当前实际装的版本
 
     def test_supported_trl_passes_silently(self):
         from unittest import mock
         import rl.grpo_reward as gr
+
         with mock.patch("importlib.metadata.version", return_value="0.28.0"):
-            gr.require_rollout_func_support()   # 不抛异常即可
+            gr.require_rollout_func_support()  # 不抛异常即可
 
 
 if __name__ == "__main__":

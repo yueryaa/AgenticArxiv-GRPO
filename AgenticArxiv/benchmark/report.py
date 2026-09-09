@@ -8,7 +8,7 @@ import math
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
 
-from benchmark.metrics import TaskMetrics
+from benchmark.metrics import TaskMetrics, is_strict_success
 
 
 class BenchmarkReport:
@@ -40,9 +40,10 @@ class BenchmarkReport:
                 "avg_iterations": _avg(items, "iteration_count"),
                 "avg_tokens": _avg(items, "total_tokens"),
                 "completion_rate": _rate(items, "task_completed"),
+                "strict_success_rate": sum(is_strict_success(m) for m in items) / n,
                 "tool_accuracy": _rate(items, "tool_call_accurate"),
-                "arg_accuracy": _avg(items, "arg_score"),
-                "ref_accuracy": _avg(items, "ref_score"),
+                "arg_accuracy": _avg_applicable(items, "arg_score", "arg_applicable"),
+                "ref_accuracy": _avg_applicable(items, "ref_score", "ref_applicable"),
                 # 两个分母各有用途：对全部运行取率可跨 Agent 比较；
                 # 对 FINISH 运行取率回答「它说完成时有多少次在撒谎」。
                 "false_finish_rate": _rate(items, "false_finish"),
@@ -57,7 +58,7 @@ class BenchmarkReport:
         return summary
 
     def reliability_by_agent(
-        self, ks=(1, 2, 3), criterion: str = "accurate"
+        self, ks=(1, 2, 3), criterion: str = "strict"
     ) -> Dict[str, Dict[str, Any]]:
         """按 Agent 聚合 pass^k：先在每个任务内估计，再对任务取平均。
 
@@ -93,7 +94,7 @@ class BenchmarkReport:
             summary[agent_type] = row
         return summary
 
-    def cost_by_agent(self, criterion: str = "accurate") -> Dict[str, Dict[str, Any]]:
+    def cost_by_agent(self, criterion: str = "strict") -> Dict[str, Dict[str, Any]]:
         """交付一个成功结果的代价，以及失败时的代价形态。
 
         分母取成功数而非运行数，分子取**全部**运行的用量：失败的尝试同样
@@ -134,7 +135,7 @@ class BenchmarkReport:
             }
         return summary
 
-    def difficulty_bands(self, criterion: str = "accurate") -> Dict[str, List[str]]:
+    def difficulty_bands(self, criterion: str = "strict") -> Dict[str, List[str]]:
         """按成功率把任务分三档，跨 Agent 合并统计。
 
         GRPO 的梯度来自组内奖励方差：成功率贴近 0 或 1 的任务，
@@ -165,6 +166,7 @@ class BenchmarkReport:
                 "count": len(items),
                 "avg_total_ms": _avg(items, "total_time_ms"),
                 "completion_rate": _rate(items, "task_completed"),
+                "strict_success_rate": sum(is_strict_success(m) for m in items) / len(items),
                 "tool_accuracy": _rate(items, "tool_call_accurate"),
             }
         return summary
@@ -187,8 +189,10 @@ class BenchmarkReport:
                 "termination": m.termination_type,
                 "tool_accurate": m.tool_call_accurate,
                 "arg_score": m.arg_score,
+                "arg_applicable": m.arg_applicable,
                 "false_finish": m.false_finish,
                 "ref_score": m.ref_score,
+                "ref_applicable": m.ref_applicable,
                 "tools": ",".join(m.tool_call_sequence),
                 "expected": ",".join(m.expected_tools),
                 "parse_fail": m.parse_failures,
@@ -264,7 +268,8 @@ class BenchmarkReport:
         lines.append(sep)
 
         acc_rows = [
-            ("任务完成率", "completion_rate"),
+            ("正常结束率(FINISH)", "completion_rate"),
+            ("严格成功率", "strict_success_rate"),
             ("工具调用准确率", "tool_accuracy"),
             ("参数准确率", "arg_accuracy"),
             ("指代解析准确率", "ref_accuracy"),
@@ -276,7 +281,9 @@ class BenchmarkReport:
             vals = []
             for a in agents:
                 v = summary[a].get(key, 0)
-                if "rate" in key or "accuracy" in key:
+                if v is None:
+                    vals.append("n/a")
+                elif "rate" in key or "accuracy" in key:
                     vals.append(f"{v:.0%}")
                 else:
                     vals.append(_fmt(v))
@@ -327,12 +334,13 @@ class BenchmarkReport:
         if task_summary:
             lines.append("### 按任务对比")
             lines.append("")
-            lines.append("| 任务 | 样本 | 平均耗时(ms) | 完成率 | 工具准确率 |")
-            lines.append("|---|---|---|---|---|")
+            lines.append("| 任务 | 样本 | 平均耗时(ms) | 正常结束率 | 严格成功率 | 工具准确率 |")
+            lines.append("|---|---|---|---|---|---|")
             for tid, s in sorted(task_summary.items()):
                 lines.append(
                     f"| {tid} | {s['count']} | {_fmt(s['avg_total_ms'])} "
-                    f"| {s['completion_rate']:.0%} | {s['tool_accuracy']:.0%} |"
+                    f"| {s['completion_rate']:.0%} | {s['strict_success_rate']:.0%} "
+                    f"| {s['tool_accuracy']:.0%} |"
                 )
 
         return "\n".join(lines)
@@ -421,6 +429,7 @@ class BenchmarkReport:
 SUCCESS_CRITERIA = {
     "completed": lambda m: m.task_completed,
     "accurate": lambda m: m.task_completed and m.tool_call_accurate,
+    "strict": is_strict_success,
 }
 
 
@@ -465,6 +474,20 @@ def _avg(items: List[TaskMetrics], attr: str) -> float:
         return 0.0
     vals = [getattr(m, attr, 0) or 0 for m in items]
     return round(sum(vals) / len(vals), 1)
+
+
+def _avg_applicable(
+    items: List[TaskMetrics], value_attr: str, applicable_attr: str
+) -> Optional[float]:
+    """只聚合真正声明了该指标标准答案的样本；没有分母时返回 n/a。"""
+    vals = [
+        getattr(m, value_attr, 0.0)
+        for m in items
+        if getattr(m, applicable_attr, False)
+    ]
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
 
 
 def _rate(items: List[TaskMetrics], attr: str) -> float:

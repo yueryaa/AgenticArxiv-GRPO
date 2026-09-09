@@ -116,6 +116,7 @@ class RewardCalculator:
                 history,
                 task_def.get("expected_tool_args"),
                 task_def.get("expected_tools"),
+                task_def.get("expected_paper_ids"),
             ),
             "process": self._process_score(history, metrics),
             "outcome": self._outcome_score(metrics),
@@ -185,10 +186,13 @@ class RewardCalculator:
         history: Sequence[Dict[str, Any]],
         expected_args: Optional[Sequence[Optional[Mapping[str, Any]]]],
         expected_tools: Optional[Sequence[str]] = None,
+        expected_paper_ids: Optional[Sequence[Optional[str]]] = None,
     ) -> Optional[float]:
         # 比对逻辑在 benchmark/metrics.py，供 benchmark 报告共用；
         # 这里只做 [0,1] → [-1,1] 的缩放。
-        score = argument_match_score(history, expected_args, expected_tools)
+        score = argument_match_score(
+            history, expected_args, expected_tools, expected_paper_ids
+        )
         return None if score is None else 2 * score - 1
 
     @staticmethod
@@ -213,6 +217,12 @@ class RewardCalculator:
             return -1.0
         if metrics.termination_type == "FORCE_STOP":
             return -0.5
+        # FINISH only means the policy chose to stop. It cannot turn a failed
+        # environment transition into a successful outcome. Without this guard,
+        # a trajectory that calls the expected tool with an unresolvable ref can
+        # still receive positive outcome credit and outrank a clean trajectory.
+        if metrics.tool_exec_failures > 0:
+            return -1.0
         if metrics.task_completed and metrics.tool_call_accurate:
             # 工具名对了不等于任务完成。`tool_call_accurate` 只比较工具序列，
             # 问 cs.CL 却搜了 cs.AI 在这里完全相等——要的东西根本没拿到，
@@ -221,7 +231,8 @@ class RewardCalculator:
             # 下限保持 0.25，与「FINISH 了但工具序列错」持平：参数全错不该
             # 罚得比工具全错还狠。任务未声明参数标准答案时 arg_score 恒为 1.0，
             # 该分支行为与原实现一致。
-            return max(0.25, 2 * metrics.arg_score - 1)
+            semantic = min(metrics.arg_score, metrics.ref_score)
+            return max(0.25, 2 * semantic - 1)
         if metrics.task_completed:
             return 0.25
         return -0.25
